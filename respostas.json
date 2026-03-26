@@ -1,0 +1,10 @@
+{
+  "funcionario": "João Silva - Analista de Suporte",
+  "dimensoes": {
+    "Exigencias Quantitativas": [4, 5, 4, 5, 3],
+    "Exigencias Emocionais": [5, 5, 4, 5, 5],
+    "Suporte Social": [2, 1, 2, 2, 1],
+    "Inseguranca no Emprego": [4, 4, 3, 5, 4],
+    "Conflito Trabalho-Familia": [5, 4, 5, 4, 4]
+  }
+}

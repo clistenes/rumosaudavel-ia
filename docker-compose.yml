@@ -1,0 +1,17 @@
+services:
+  openclaw:
+    image: openclaw/openclaw:latest
+    container_name: openclaw_psico
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./skills:/app/skills
+    environment:
+      - GOOGLE_API_KEY=SUA_CHAVE_API_AQUI
+      - DEFAULT_MODEL=gemini-1.5-pro
+    networks:
+      - psychology_net
+
+networks:
+  psychology_net:
+    driver: bridge
