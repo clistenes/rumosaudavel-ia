@@ -1,10 +1,25 @@
 {
-  "funcionario": "João Silva - Analista de Suporte",
+  "funcionario": "Carlos Alberto - Operador de Produção",
   "dimensoes": {
-    "Exigencias Quantitativas": [4, 5, 4, 5, 3],
-    "Exigencias Emocionais": [5, 5, 4, 5, 5],
-    "Suporte Social": [2, 1, 2, 2, 1],
-    "Inseguranca no Emprego": [4, 4, 3, 5, 4],
-    "Conflito Trabalho-Familia": [5, 4, 5, 4, 4]
+    "Exigências Quantitativas": [4, 5],
+    "Ritmo de Trabalho": [5, 4],
+    "Exigências Emocionais": [4, 5],
+    "Influência": [2, 1],
+    "Possibilidades de Desenvolvimento": [2, 2],
+    "Sentido do Trabalho": [1, 2],
+    "Compromisso com o local de Trabalho": [2, 1],
+    "Previsibilidade": [2, 2],
+    "Clareza de Papel": [1, 2],
+    "Conflito de Papel": [4, 5],
+    "Qualidade da Liderança": [2, 1],
+    "Suporte Social": [1, 2],
+    "Satisfação com o Trabalho": [2, 1],
+    "Insegurança no Emprego": [5, 4],
+    "Conflito Trabalho-Família": [4, 5],
+    "Confiança Horizontal": [2, 2],
+    "Justiça e Respeito": [1, 2],
+    "Autoeficácia": [3, 4],
+    "Burnout (Esgotamento)": [5, 5],
+    "Estresse": [4, 5]
   }
 }

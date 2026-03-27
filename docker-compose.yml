@@ -1,17 +1,37 @@
 services:
   openclaw:
-    image: openclaw/openclaw:latest
+    image: alpine/openclaw:latest
     container_name: openclaw_psico
-    ports:
-      - "8000:8000"
+    network_mode: host
+    user: root
     volumes:
       - ./skills:/app/skills
     environment:
-      - GOOGLE_API_KEY=SUA_CHAVE_API_AQUI
-      - DEFAULT_MODEL=gemini-1.5-pro
-    networks:
-      - psychology_net
+      - GOOGLE_API_KEY=AIzaSyAMmFlGzJOYKg3YTkNidXQlUkHAR6di7Kk
+      - OPENCLAW_GATEWAY_HOST=127.0.0.1
+      - OPENCLAW_GATEWAY_PORT=18789
+      - OPENCLAW_GATEWAY_MODEL=google/gemini-1.5-pro
+      - OPENCLAW_GATEWAY_AUTH_TOKEN=psicologia_nr1_secret_2026
+    restart: unless-stopped
 
-networks:
-  psychology_net:
-    driver: bridge
+  app_psico:
+    image: golang:1.22-alpine
+    container_name: app_psico
+    network_mode: host
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      - OPENCLAW_URL=ws://127.0.0.1:18789/api/v1/run-skill/copsoq_nr1_expert
+    command: >
+      sh -c "sleep 15 &&
+             go mod init pgr-psicossocial || true &&
+             go get github.com/gofiber/fiber/v2 github.com/gorilla/websocket github.com/jung-kurt/gofpdf &&
+             go run main.go"
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx_proxy
+    network_mode: host
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
