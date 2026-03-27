@@ -7,7 +7,7 @@ services:
     volumes:
       - ./skills:/app/skills
     environment:
-      - GOOGLE_API_KEY=AIzaSyAMmFlGzJOYKg3YTkNidXQlUkHAR6di7Kk
+      - GOOGLE_API_KEY=
       - OPENCLAW_GATEWAY_HOST=127.0.0.1
       - OPENCLAW_GATEWAY_PORT=18789
       - OPENCLAW_GATEWAY_MODEL=google/gemini-1.5-pro
