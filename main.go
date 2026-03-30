@@ -99,10 +99,11 @@ func consultarGeminiAIStudio(funcionario string, dados map[string]float64) (*Gem
 	apiKey := os.Getenv("GOOGLE_API_KEY")
 
 	// Modelo 2.0 Flash (conforme disponível na sua tela)
+	//modelName := "gemini-2.5-pro"
 	modelName := "gemini-2.0-flash"
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", modelName, apiKey)
 
-	fmt.Printf(">>> Chamando API Gemini 2.0 Flash para: %s\n", funcionario)
+	fmt.Printf(">>> Chamando API %s para: %s\n", modelName, funcionario)
 
 	promptText := fmt.Sprintf("Analise os scores COPSOQ II-Br do funcionário %s: %v. Retorne o JSON da matriz de risco conforme as instruções de sistema.", funcionario, dados)
 
