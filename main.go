@@ -1,21 +1,24 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
-	"time"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/gorilla/websocket"
+	"github.com/joho/godotenv"
 	"github.com/jung-kurt/gofpdf"
 )
 
-// Estruturas para comunicação com OpenClaw
+// Estruturas de dados
 type RespostasInput struct {
-	Funcionario string              `json:"funcionario"`
-	Dimensoes   map[string][]int    `json:"dimensoes"`
+	Funcionario string           `json:"funcionario"`
+	Dimensoes   map[string][]int `json:"dimensoes"`
 }
 
 type Risk struct {
@@ -23,128 +26,156 @@ type Risk struct {
 	Probabilidade int    `json:"probabilidade"`
 	Severidade    int    `json:"severidade"`
 	NivelRisco    string `json:"nivel_risco"`
-	CorPGR        string `json:"cor_pgr"` // Verde, Amarelo, Laranja, Vermelho
+	CorPGR        string `json:"cor_pgr"`
 	Recomendacao  string `json:"recomendacao_nr1"`
 }
 
-type OpenClawResponse struct {
-	ScoreGeral   int    `json:"score_geral_saude"`
-	MatrizPGR    []Risk `json:"matriz_pgr"`
-	Conclusao    string `json:"conclusao_diagnostica"`
+type GeminiAIStudio struct {
+	ScoreGeral int    `json:"score_geral_saude"`
+	MatrizPGR  []Risk `json:"matriz_pgr"`
+	Conclusao  string `json:"conclusao_diagnostica"`
 }
 
 func main() {
+	fmt.Println(">>> Iniciando aplicação...")
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Erro ao carregar o arquivo .env")
+	}
+	fmt.Println(">>> Arquivo .env carregado com sucesso.")
+
 	app := fiber.New()
 
 	app.Post("/api/v1/pgr-psicossocial", func(c *fiber.Ctx) error {
+		fmt.Println("\n--- Nova requisição recebida ---")
 		var input RespostasInput
 		if err := c.BodyParser(&input); err != nil {
+			fmt.Println("ERR: Falha ao parsear JSON de entrada:", err)
 			return c.Status(400).JSON(fiber.Map{"error": "JSON inválido"})
 		}
+		fmt.Printf(">>> Processando funcionário: %s\n", input.Funcionario)
 
-		// 1. Cálculo Aritmético com Inversão de Polaridade (Baseado na Tese)
 		scoresBrutos := calcularScoresCopsoqBr(input.Dimensoes)
+		fmt.Println(">>> Scores calculados internamente.")
 
-		// 2. Chamada ao OpenClaw/Gemini
-		analise, err := consultarOpenClaw(input.Funcionario, scoresBrutos)
+		fmt.Println(">>> Consultando Gemini AI Studio...")
+		analise, err := consultarGeminiAIStudio(input.Funcionario, scoresBrutos)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "Erro no OpenClaw: " + err.Error()})
+			fmt.Println("ERR: Falha na comunicação com Gemini:", err)
+			return c.Status(500).JSON(fiber.Map{"error": "Erro na IA: " + err.Error()})
 		}
+		fmt.Println(">>> Resposta da IA recebida e parseada com sucesso.")
 
-		// 3. Geração do PDF Colorido
 		pdfPath := fmt.Sprintf("relatorio_nr1_%s.pdf", strings.ReplaceAll(input.Funcionario, " ", "_"))
+		fmt.Printf(">>> Gerando PDF em: %s\n", pdfPath)
 		err = gerarPDFColorido(input.Funcionario, analise, pdfPath)
 		if err != nil {
+			fmt.Println("ERR: Falha ao gerar PDF:", err)
 			return c.Status(500).JSON(fiber.Map{"error": "Erro ao gerar PDF"})
 		}
 
+		fmt.Println(">>> Relatório finalizado. Enviando para o cliente.")
 		return c.Download(pdfPath)
 	})
 
+	fmt.Println(">>> Servidor rodando na porta 3000")
 	log.Fatal(app.Listen("0.0.0.0:3000"))
 }
 
-// Lógica baseada na adaptação cultural do COPSOQ II-Br
 func calcularScoresCopsoqBr(dimensoes map[string][]int) map[string]float64 {
 	resultados := make(map[string]float64)
-
-	// Dimensões onde score ALTO é RUIM (Exigências, Insegurança, Conflitos)
-	// Dimensões onde score BAIXO é RUIM (Apoio Social, Influência, Sentido, Recompensas)
-	recursosTrabalho := map[string]bool{
-		"Influência": true, "Possibilidades de Desenvolvimento": true,
-		"Sentido do Trabalho": true, "Compromisso com o local de Trabalho": true,
-		"Previsibilidade": true, "Suporte Social": true, "Qualidade da Liderança": true,
-		"Recompensas": true, "Confiança Horizontal": true, "Justiça": true,
-	}
-
 	for nome, valores := range dimensoes {
 		soma := 0
 		for _, v := range valores {
 			soma += v
 		}
-		media := (float64(soma) / float64(len(valores) * 5)) * 100
-
-		if recursosTrabalho[nome] {
-			// Se for um recurso, invertemos para o Gemini entender que 0 é o pior risco
-			// Ou enviamos o valor real e deixamos a Skill inverter.
-			// Recomendado: Enviar o valor real (0-100) e a Skill interpreta.
-			resultados[nome] = media
-		} else {
-			resultados[nome] = media
-		}
+		media := (float64(soma) / float64(len(valores)*5)) * 100
+		resultados[nome] = media
 	}
 	return resultados
 }
 
-func consultarOpenClaw(funcionario string, dados map[string]float64) (*OpenClawResponse, error) {
-    url := "ws://127.0.0.1:18789/api/v1/run-skill/copsoq_nr1_expert"
-    token := "psicologia_nr1_secret_2026"
+func consultarGeminiAIStudio(funcionario string, dados map[string]float64) (*GeminiAIStudio, error) {
+	apiKey := os.Getenv("GOOGLE_API_KEY")
 
-    var conn *websocket.Conn
-    var err error
-    dialer := websocket.Dialer{}
-    header := http.Header{}
-    header.Add("Authorization", "Bearer "+token)
+	// Modelo 2.0 Flash (conforme disponível na sua tela)
+	modelName := "gemini-2.0-flash"
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", modelName, apiKey)
 
-    // Tenta conectar até 3 vezes com intervalo de 2 segundos
-    for i := 0; i < 3; i++ {
-        conn, _, err = dialer.Dial(url, header)
-        if err == nil {
-            break
-        }
-        fmt.Printf("Tentativa %d: OpenClaw ainda não respondeu, aguardando...\n", i+1)
-        time.Sleep(2 * time.Second)
-    }
+	fmt.Printf(">>> Chamando API Gemini 2.0 Flash para: %s\n", funcionario)
 
-    if err != nil {
-        return nil, fmt.Errorf("não foi possível conectar ao OpenClaw após várias tentativas: %v", err)
-    }
-    defer conn.Close()
+	promptText := fmt.Sprintf("Analise os scores COPSOQ II-Br do funcionário %s: %v. Retorne o JSON da matriz de risco conforme as instruções de sistema.", funcionario, dados)
 
 	payload := map[string]interface{}{
-		"input": map[string]interface{}{
-			"funcionario": funcionario,
-			"scores":      dados,
+		"contents": []map[string]interface{}{
+			{
+				"parts": []map[string]interface{}{
+					{"text": promptText},
+				},
+			},
+		},
+		"generationConfig": map[string]interface{}{
+			"temperature":      0.1,
+			"response_mime_type": "application/json",
 		},
 	}
 
-	if err := conn.WriteJSON(payload); err != nil {
+	jsonData, _ := json.Marshal(payload)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		bodyErr, _ := io.ReadAll(resp.Body)
+		fmt.Printf("ERR: Status %d. Detalhes: %s\n", resp.StatusCode, string(bodyErr))
+		return nil, fmt.Errorf("Erro na API: %d", resp.StatusCode)
+	}
+
+	var geminiRaw struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&geminiRaw); err != nil {
 		return nil, err
 	}
 
-	var result OpenClawResponse
-	if err := conn.ReadJSON(&result); err != nil {
+	if len(geminiRaw.Candidates) == 0 {
+		return nil, fmt.Errorf("IA não retornou candidatos")
+	}
+
+	rawText := geminiRaw.Candidates[0].Content.Parts[0].Text
+
+	// Limpeza para garantir que o Unmarshal não falhe com caracteres extras
+	cleanJSON := strings.TrimSpace(rawText)
+	if strings.HasPrefix(cleanJSON, "```") {
+		cleanJSON = strings.TrimPrefix(cleanJSON, "```json")
+		cleanJSON = strings.TrimPrefix(cleanJSON, "```")
+		cleanJSON = strings.TrimSuffix(cleanJSON, "```")
+		cleanJSON = strings.TrimSpace(cleanJSON)
+	}
+
+	var finalResponse GeminiAIStudio
+	err = json.Unmarshal([]byte(cleanJSON), &finalResponse)
+	if err != nil {
+		fmt.Println("ERR: JSON da IA inválido. Texto bruto:", cleanJSON)
 		return nil, err
 	}
 
-	return &result, nil
+	return &finalResponse, nil
 }
 
-func gerarPDFColorido(nome string, data *OpenClawResponse, path string) error {
+func gerarPDFColorido(nome string, data *GeminiAIStudio, path string) error {
 	pdf := gofpdf.New("P", "mm", "A4", "")
 	pdf.AddPage()
 
-	// Estilos de Cores (RGB) para a Matriz NR-01
 	cores := map[string][]int{
 		"Verde":    {144, 238, 144},
 		"Amarelo":  {255, 255, 0},
@@ -153,25 +184,23 @@ func gerarPDFColorido(nome string, data *OpenClawResponse, path string) error {
 	}
 
 	pdf.SetFont("Arial", "B", 16)
-	pdf.Cell(0, 10, "Inventário de Riscos Psicossociais (NR-01 / COPSOQ II-Br)")
+	pdf.Cell(0, 10, "Inventario de Riscos Psicossociais (NR-01 / COPSOQ II-Br)")
 	pdf.Ln(12)
 
 	pdf.SetFont("Arial", "", 11)
-	pdf.Cell(0, 10, fmt.Sprintf("Funcionário: %s", nome))
+	pdf.Cell(0, 10, fmt.Sprintf("Funcionario: %s", nome))
 	pdf.Ln(8)
-	pdf.Cell(0, 10, fmt.Sprintf("Índice de Saúde Mental Global: %d/100", data.ScoreGeral))
+	pdf.Cell(0, 10, fmt.Sprintf("Indice de Saude Mental Global: %d/100", data.ScoreGeral))
 	pdf.Ln(15)
 
-	// Cabeçalho da Tabela
 	pdf.SetFillColor(200, 200, 200)
 	pdf.SetFont("Arial", "B", 9)
-	pdf.CellFormat(60, 10, "Dimensão Psicossocial", "1", 0, "C", true, 0, "")
+	pdf.CellFormat(60, 10, "Dimensao Psicossocial", "1", 0, "C", true, 0, "")
 	pdf.CellFormat(20, 10, "Prob (P)", "1", 0, "C", true, 0, "")
 	pdf.CellFormat(20, 10, "Sever (S)", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(40, 10, "Nível de Risco", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(50, 10, "Ação Recomendada", "1", 1, "C", true, 0, "")
+	pdf.CellFormat(40, 10, "Nivel de Risco", "1", 0, "C", true, 0, "")
+	pdf.CellFormat(50, 10, "Acao Recomendada", "1", 1, "C", true, 0, "")
 
-	// Linhas da Matriz
 	pdf.SetFont("Arial", "", 8)
 	for _, r := range data.MatrizPGR {
 		c, ok := cores[r.CorPGR]
@@ -181,16 +210,14 @@ func gerarPDFColorido(nome string, data *OpenClawResponse, path string) error {
 		pdf.CellFormat(20, 10, fmt.Sprintf("%d", r.Probabilidade), "1", 0, "C", false, 0, "")
 		pdf.CellFormat(20, 10, fmt.Sprintf("%d", r.Severidade), "1", 0, "C", false, 0, "")
 
-		// Célula Colorida para o Nível de Risco
 		pdf.SetFillColor(c[0], c[1], c[2])
 		pdf.CellFormat(40, 10, r.NivelRisco, "1", 0, "C", true, 0, "")
-
 		pdf.CellFormat(50, 10, r.Recomendacao, "1", 1, "L", false, 0, "")
 	}
 
 	pdf.Ln(10)
 	pdf.SetFont("Arial", "B", 11)
-	pdf.Cell(0, 10, "Conclusão Diagnóstica e Parecer Técnico:")
+	pdf.Cell(0, 10, "Conclusao Diagnostica e Parecer Tecnico:")
 	pdf.Ln(8)
 	pdf.SetFont("Arial", "", 10)
 	pdf.MultiCell(0, 5, data.Conclusao, "", "L", false)
