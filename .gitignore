@@ -1,2 +1,3 @@
 .env
-relatorio_teste.pdf
+.DS_Store
+relatorio_*.pdf

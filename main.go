@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -37,12 +38,11 @@ type GeminiAIStudio struct {
 }
 
 func main() {
-	fmt.Println(">>> Iniciando aplicação...")
+	fmt.Println(">>> Iniciando Rumo Saudável...")
 	err := godotenv.Load()
 	if err != nil {
 		log.Fatal("Erro ao carregar o arquivo .env")
 	}
-	fmt.Println(">>> Arquivo .env carregado com sucesso.")
 
 	app := fiber.New()
 
@@ -50,36 +50,263 @@ func main() {
 		fmt.Println("\n--- Nova requisição recebida ---")
 		var input RespostasInput
 		if err := c.BodyParser(&input); err != nil {
-			fmt.Println("ERR: Falha ao parsear JSON de entrada:", err)
 			return c.Status(400).JSON(fiber.Map{"error": "JSON inválido"})
 		}
-		fmt.Printf(">>> Processando funcionário: %s\n", input.Funcionario)
+
+		// 1. Sincroniza Documentos (Verifica se estão na API ou faz Upload da pasta ./docs)
+		fileURIs, err := sincronizarDocumentos()
+		if err != nil {
+			fmt.Printf("ERR: Falha ao sincronizar documentos: %v\n", err)
+			return c.Status(500).JSON(fiber.Map{"error": "Erro ao preparar base de conhecimento"})
+		}
 
 		scoresBrutos := calcularScoresCopsoqBr(input.Dimensoes)
-		fmt.Println(">>> Scores calculados internamente.")
 
-		fmt.Println(">>> Consultando Gemini AI Studio...")
-		analise, err := consultarGeminiAIStudio(input.Funcionario, scoresBrutos)
+		// 2. Chamada à IA passando as URIs dos ficheiros sincronizados
+		analise, err := consultarGeminiAIStudio(input.Funcionario, scoresBrutos, fileURIs)
 		if err != nil {
-			fmt.Println("ERR: Falha na comunicação com Gemini:", err)
+			fmt.Printf("ERR: Falha na IA: %v\n", err)
 			return c.Status(500).JSON(fiber.Map{"error": "Erro na IA: " + err.Error()})
 		}
-		fmt.Println(">>> Resposta da IA recebida e parseada com sucesso.")
 
+		// 3. Geração do PDF
 		pdfPath := fmt.Sprintf("relatorio_nr1_%s.pdf", strings.ReplaceAll(input.Funcionario, " ", "_"))
-		fmt.Printf(">>> Gerando PDF em: %s\n", pdfPath)
 		err = gerarPDFColorido(input.Funcionario, analise, pdfPath)
 		if err != nil {
-			fmt.Println("ERR: Falha ao gerar PDF:", err)
 			return c.Status(500).JSON(fiber.Map{"error": "Erro ao gerar PDF"})
 		}
 
-		fmt.Println(">>> Relatório finalizado. Enviando para o cliente.")
+		fmt.Printf(">>> Sucesso: Relatório gerado para %s\n", input.Funcionario)
 		return c.Download(pdfPath)
 	})
 
-	fmt.Println(">>> Servidor rodando na porta 3000")
 	log.Fatal(app.Listen("0.0.0.0:3000"))
+}
+
+func sincronizarDocumentos() ([]string, error) {
+	apiKey := os.Getenv("GOOGLE_API_KEY")
+	folderPath := "./docs"
+	filesToUpload := []string{
+		"adaptacao_cultural_copsoq_brasil.pdf",
+		"copsoq_II_curto_versao_adap_brasil.pdf",
+		"tese_de_doutorado_copsoq_brasil_jsg_final.pdf",
+	}
+
+	// Listar arquivos que já existem no servidor do Google
+	listURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/files?key=%s", apiKey)
+	resp, err := http.Get(listURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var listData struct {
+		Files []struct {
+			DisplayName string `json:"displayName"`
+			URI         string `json:"uri"`
+			State       string `json:"state"`
+		} `json:"files"`
+	}
+	json.NewDecoder(resp.Body).Decode(&listData)
+
+	existingMap := make(map[string]string)
+	for _, f := range listData.Files {
+		if f.State == "ACTIVE" {
+			existingMap[f.DisplayName] = f.URI
+		}
+	}
+
+	var finalURIs []string
+	for _, fileName := range filesToUpload {
+		if uri, ok := existingMap[fileName]; ok {
+			fmt.Printf(">>> Arquivo verificado (OK): %s\n", fileName)
+			finalURIs = append(finalURIs, uri)
+		} else {
+			fmt.Printf(">>> Arquivo ausente ou expirado. Fazendo upload: %s...\n", fileName)
+			newURI, err := uploadFileToAIStudio(filepath.Join(folderPath, fileName), fileName, apiKey)
+			if err != nil {
+				return nil, err
+			}
+			finalURIs = append(finalURIs, newURI)
+		}
+	}
+
+	return finalURIs, nil
+}
+
+func uploadFileToAIStudio(path, displayName, apiKey string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("falha ao abrir arquivo local: %v", err)
+	}
+	defer file.Close()
+
+	fileInfo, _ := file.Stat()
+	fileSize := fileInfo.Size()
+
+	// 1. Iniciar upload (Metadata) - Note a URL de upload correta
+	initURL := fmt.Sprintf("https://generativelanguage.googleapis.com/upload/v1beta/files?key=%s", apiKey)
+
+	meta := map[string]interface{}{"file": map[string]string{"displayName": displayName}}
+	metaJSON, _ := json.Marshal(meta)
+
+	req, err := http.NewRequest("POST", initURL, bytes.NewReader(metaJSON))
+	if err != nil {
+		return "", fmt.Errorf("erro ao criar requisição de init: %v", err)
+	}
+
+	req.Header.Set("X-Goog-Upload-Protocol", "resumable")
+	req.Header.Set("X-Goog-Upload-Command", "start")
+	req.Header.Set("X-Goog-Upload-Header-Content-Length", fmt.Sprintf("%d", fileSize))
+	req.Header.Set("X-Goog-Upload-Header-Content-Type", "application/pdf")
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("erro na chamada de init upload: %v", err)
+	}
+	defer resp.Body.Close()
+
+	uploadURL := resp.Header.Get("X-Goog-Upload-URL")
+	if uploadURL == "" {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("Google não retornou URL de upload. Status: %d, Body: %s", resp.StatusCode, string(body))
+	}
+
+	// 2. Upload do binário real
+	reqData, err := http.NewRequest("POST", uploadURL, file)
+	if err != nil {
+		return "", fmt.Errorf("erro ao criar requisição de dados: %v", err)
+	}
+	reqData.Header.Set("X-Goog-Upload-Offset", "0")
+	reqData.Header.Set("X-Goog-Upload-Command", "upload, finalize")
+	reqData.ContentLength = fileSize
+
+	respData, err := client.Do(reqData)
+	if err != nil {
+		return "", fmt.Errorf("erro no envio do binário: %v", err)
+	}
+	defer respData.Body.Close()
+
+	if respData.StatusCode != 200 && respData.StatusCode != 201 {
+		body, _ := io.ReadAll(respData.Body)
+		return "", fmt.Errorf("falha no upload do binário. Status: %d, Body: %s", respData.StatusCode, string(body))
+	}
+
+	var res struct {
+		File struct {
+			URI string `json:"uri"`
+		} `json:"file"`
+	}
+	if err := json.NewDecoder(respData.Body).Decode(&res); err != nil {
+		return "", fmt.Errorf("erro ao decodificar resposta final do Google: %v", err)
+	}
+
+	return res.File.URI, nil
+}
+
+func consultarGeminiAIStudio(funcionario string, dados map[string]float64, fileURIs []string) (*GeminiAIStudio, error) {
+	apiKey := os.Getenv("GOOGLE_API_KEY")
+	modelName := "gemini-2.5-pro"
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", modelName, apiKey)
+
+	// System Instructions reforçado para evitar gatilhos de segurança
+	systemInstructions := `VOCÊ É UM ASSISTENTE TÉCNICO DE ENGENHARIA DE SEGURANÇA DO TRABALHO.
+		ESTA É UMA ANÁLISE TÉCNICA E ESTATÍSTICA PARA CONFORMIDADE COM A NR-01 (PGR).
+		O conteúdo dos documentos anexados (COPSOQ II-Br) deve ser tratado estritamente como base científica para classificação de riscos ocupacionais.
+		Não há aconselhamento médico individual, apenas análise de scores organizacionais.
+
+		Sua tarefa é converter scores (0-100) em uma Matriz de Risco detalhada.
+
+		DIRETRIZES:
+		1. NÃO AGRUPAR DIMENSÕES: Gere um objeto individual para CADA dimensão recebida.
+		2. DIREÇÃO DO SCORE: ALTO RISCO se Score FOR ALTO para Exigências/Burnout; ALTO RISCO se Score FOR BAIXO para Recursos/Apoio.
+		3. FORMATO DE SAÍDA (ESTRITAMENTE JSON):
+		{
+		"score_geral_saude": integer,
+		"matriz_pgr": [
+			{"dimensao": "string", "probabilidade": 1-5, "severidade": 1-5, "nivel_risco": "string", "cor_pgr": "string", "recomendacao_nr1": "string"}
+		],
+		"conclusao_diagnostica": "string"
+		}
+
+		IMPORTANT: Return ONLY a valid JSON object.`
+
+	var parts []map[string]interface{}
+	for _, uri := range fileURIs {
+		parts = append(parts, map[string]interface{}{
+			"file_data": map[string]interface{}{"mime_type": "application/pdf", "file_uri": uri},
+		})
+	}
+	parts = append(parts, map[string]interface{}{
+		"text": fmt.Sprintf("Analise tecnicamente os scores do funcionário %s: %v. Retorne apenas o JSON.", funcionario, dados),
+	})
+
+	payload := map[string]interface{}{
+		"system_instruction": map[string]interface{}{
+			"parts": []map[string]interface{}{{"text": systemInstructions}},
+		},
+		"contents": []map[string]interface{}{{"parts": parts}},
+		"generationConfig": map[string]interface{}{
+			"temperature":        0.0,
+			"topP":               0.1, // Reduzido para evitar alucinações que disparem filtros
+			"response_mime_type": "application/json",
+		},
+		"safetySettings": []map[string]interface{}{
+			{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+			{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+			{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+			{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+		},
+	}
+
+	jsonData, _ := json.Marshal(payload)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	// Lemos todo o corpo da resposta primeiro para garantir o log de erro
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var geminiRaw struct {
+		Candidates []struct {
+			FinishReason string `json:"finishReason"`
+			Content      struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+			SafetyRatings []struct {
+				Category    string `json:"category"`
+				Probability string `json:"probability"`
+			} `json:"safetyRatings"`
+		} `json:"candidates"`
+	}
+
+	if err := json.Unmarshal(bodyBytes, &geminiRaw); err != nil {
+		fmt.Printf(">>> Erro ao decodificar resposta. Raw Body: %s\n", string(bodyBytes))
+		return nil, err
+	}
+
+	// Verificação detalhada de bloqueio
+	if len(geminiRaw.Candidates) == 0 || geminiRaw.Candidates[0].FinishReason == "SAFETY" {
+		fmt.Printf(">>> BLOQUEIO DE SEGURANÇA DETECTADO. Resposta Bruta: %s\n", string(bodyBytes))
+		if len(geminiRaw.Candidates) > 0 {
+			fmt.Printf(">>> Safety Ratings: %+v\n", geminiRaw.Candidates[0].SafetyRatings)
+		}
+		return nil, fmt.Errorf("IA bloqueou a resposta por segurança ou falta de candidatos")
+	}
+
+	var finalResponse GeminiAIStudio
+	textResponse := geminiRaw.Candidates[0].Content.Parts[0].Text
+	err = json.Unmarshal([]byte(textResponse), &finalResponse)
+	return &finalResponse, err
 }
 
 func calcularScoresCopsoqBr(dimensoes map[string][]int) map[string]float64 {
@@ -95,84 +322,6 @@ func calcularScoresCopsoqBr(dimensoes map[string][]int) map[string]float64 {
 	return resultados
 }
 
-func consultarGeminiAIStudio(funcionario string, dados map[string]float64) (*GeminiAIStudio, error) {
-	apiKey := os.Getenv("GOOGLE_API_KEY")
-
-	// Modelo 2.0 Flash (conforme disponível na sua tela)
-	//modelName := "gemini-2.5-pro"
-	modelName := "gemini-2.0-flash"
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", modelName, apiKey)
-
-	fmt.Printf(">>> Chamando API %s para: %s\n", modelName, funcionario)
-
-	promptText := fmt.Sprintf("Analise os scores COPSOQ II-Br do funcionário %s: %v. Retorne o JSON da matriz de risco conforme as instruções de sistema.", funcionario, dados)
-
-	payload := map[string]interface{}{
-		"contents": []map[string]interface{}{
-			{
-				"parts": []map[string]interface{}{
-					{"text": promptText},
-				},
-			},
-		},
-		"generationConfig": map[string]interface{}{
-			"temperature":      0.1,
-			"response_mime_type": "application/json",
-		},
-	}
-
-	jsonData, _ := json.Marshal(payload)
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		bodyErr, _ := io.ReadAll(resp.Body)
-		fmt.Printf("ERR: Status %d. Detalhes: %s\n", resp.StatusCode, string(bodyErr))
-		return nil, fmt.Errorf("Erro na API: %d", resp.StatusCode)
-	}
-
-	var geminiRaw struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct {
-					Text string `json:"text"`
-				} `json:"parts"`
-			} `json:"content"`
-		} `json:"candidates"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&geminiRaw); err != nil {
-		return nil, err
-	}
-
-	if len(geminiRaw.Candidates) == 0 {
-		return nil, fmt.Errorf("IA não retornou candidatos")
-	}
-
-	rawText := geminiRaw.Candidates[0].Content.Parts[0].Text
-
-	// Limpeza para garantir que o Unmarshal não falhe com caracteres extras
-	cleanJSON := strings.TrimSpace(rawText)
-	if strings.HasPrefix(cleanJSON, "```") {
-		cleanJSON = strings.TrimPrefix(cleanJSON, "```json")
-		cleanJSON = strings.TrimPrefix(cleanJSON, "```")
-		cleanJSON = strings.TrimSuffix(cleanJSON, "```")
-		cleanJSON = strings.TrimSpace(cleanJSON)
-	}
-
-	var finalResponse GeminiAIStudio
-	err = json.Unmarshal([]byte(cleanJSON), &finalResponse)
-	if err != nil {
-		fmt.Println("ERR: JSON da IA inválido. Texto bruto:", cleanJSON)
-		return nil, err
-	}
-
-	return &finalResponse, nil
-}
-
 func gerarPDFColorido(nome string, data *GeminiAIStudio, path string) error {
 	pdf := gofpdf.New("P", "mm", "A4", "")
 	pdf.AddPage()
@@ -184,43 +333,47 @@ func gerarPDFColorido(nome string, data *GeminiAIStudio, path string) error {
 		"Vermelho": {255, 99, 71},
 	}
 
-	pdf.SetFont("Arial", "B", 16)
+	pdf.SetFont("Arial", "B", 14)
 	pdf.Cell(0, 10, "Inventario de Riscos Psicossociais (NR-01 / COPSOQ II-Br)")
 	pdf.Ln(12)
 
-	pdf.SetFont("Arial", "", 11)
-	pdf.Cell(0, 10, fmt.Sprintf("Funcionario: %s", nome))
-	pdf.Ln(8)
-	pdf.Cell(0, 10, fmt.Sprintf("Indice de Saude Mental Global: %d/100", data.ScoreGeral))
-	pdf.Ln(15)
+	pdf.SetFont("Arial", "", 10)
+	pdf.Cell(0, 8, fmt.Sprintf("Funcionario: %s", nome))
+	pdf.Ln(6)
+	pdf.Cell(0, 8, fmt.Sprintf("Indice de Saude Mental Global: %d/100", data.ScoreGeral))
+	pdf.Ln(12)
 
-	pdf.SetFillColor(200, 200, 200)
-	pdf.SetFont("Arial", "B", 9)
-	pdf.CellFormat(60, 10, "Dimensao Psicossocial", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(20, 10, "Prob (P)", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(20, 10, "Sever (S)", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(40, 10, "Nivel de Risco", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(50, 10, "Acao Recomendada", "1", 1, "C", true, 0, "")
+	pdf.SetFillColor(230, 230, 230)
+	pdf.SetFont("Arial", "B", 8)
+	pdf.CellFormat(55, 10, "Dimensao", "1", 0, "C", true, 0, "")
+	pdf.CellFormat(12, 10, "P", "1", 0, "C", true, 0, "")
+	pdf.CellFormat(12, 10, "S", "1", 0, "C", true, 0, "")
+	pdf.CellFormat(25, 10, "Risco", "1", 0, "C", true, 0, "")
+	pdf.CellFormat(85, 10, "Recomendacao NR-01", "1", 1, "C", true, 0, "")
 
-	pdf.SetFont("Arial", "", 8)
+	pdf.SetFont("Arial", "", 7)
 	for _, r := range data.MatrizPGR {
 		c, ok := cores[r.CorPGR]
 		if !ok { c = []int{255, 255, 255} }
 
-		pdf.CellFormat(60, 10, r.Dimensao, "1", 0, "L", false, 0, "")
-		pdf.CellFormat(20, 10, fmt.Sprintf("%d", r.Probabilidade), "1", 0, "C", false, 0, "")
-		pdf.CellFormat(20, 10, fmt.Sprintf("%d", r.Severidade), "1", 0, "C", false, 0, "")
+		pdf.CellFormat(55, 10, r.Dimensao, "1", 0, "L", false, 0, "")
+		pdf.CellFormat(12, 10, fmt.Sprintf("%d", r.Probabilidade), "1", 0, "C", false, 0, "")
+		pdf.CellFormat(12, 10, fmt.Sprintf("%d", r.Severidade), "1", 0, "C", false, 0, "")
 
 		pdf.SetFillColor(c[0], c[1], c[2])
-		pdf.CellFormat(40, 10, r.NivelRisco, "1", 0, "C", true, 0, "")
-		pdf.CellFormat(50, 10, r.Recomendacao, "1", 1, "L", false, 0, "")
+		pdf.CellFormat(25, 10, r.NivelRisco, "1", 0, "C", true, 0, "")
+
+		x, y := pdf.GetX(), pdf.GetY()
+		pdf.MultiCell(85, 5, r.Recomendacao, "1", "L", false)
+		pdf.SetXY(x+85, y)
+		pdf.Ln(10)
 	}
 
-	pdf.Ln(10)
-	pdf.SetFont("Arial", "B", 11)
-	pdf.Cell(0, 10, "Conclusao Diagnostica e Parecer Tecnico:")
+	pdf.Ln(5)
+	pdf.SetFont("Arial", "B", 10)
+	pdf.Cell(0, 10, "Parecer Tecnico:")
 	pdf.Ln(8)
-	pdf.SetFont("Arial", "", 10)
+	pdf.SetFont("Arial", "", 9)
 	pdf.MultiCell(0, 5, data.Conclusao, "", "L", false)
 
 	return pdf.OutputFileAndClose(path)
