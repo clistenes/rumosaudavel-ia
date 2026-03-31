@@ -14,6 +14,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/joho/godotenv"
 	"github.com/jung-kurt/gofpdf"
+
+	"golang.org/x/text/encoding/charmap"
 )
 
 // Estruturas de dados
@@ -309,6 +311,12 @@ func consultarGeminiAIStudio(funcionario string, dados map[string]float64, fileU
 	return &finalResponse, err
 }
 
+func latin1(s string) string {
+    enc := charmap.ISO8859_1.NewEncoder()
+    out, _ := enc.String(s)
+    return out
+}
+
 func calcularScoresCopsoqBr(dimensoes map[string][]int) map[string]float64 {
 	resultados := make(map[string]float64)
 	for nome, valores := range dimensoes {
@@ -323,58 +331,60 @@ func calcularScoresCopsoqBr(dimensoes map[string][]int) map[string]float64 {
 }
 
 func gerarPDFColorido(nome string, data *GeminiAIStudio, path string) error {
-	pdf := gofpdf.New("P", "mm", "A4", "")
-	pdf.AddPage()
+    pdf := gofpdf.New("P", "mm", "A4", "")
+    pdf.AddPage()
 
-	cores := map[string][]int{
-		"Verde":    {144, 238, 144},
-		"Amarelo":  {255, 255, 0},
-		"Laranja":  {255, 165, 0},
-		"Vermelho": {255, 99, 71},
-	}
+    cores := map[string][]int{
+        "Verde":    {144, 238, 144},
+        "Amarelo":  {255, 255, 0},
+        "Laranja":  {255, 165, 0},
+        "Vermelho": {255, 99, 71},
+    }
 
-	pdf.SetFont("Arial", "B", 14)
-	pdf.Cell(0, 10, "Inventario de Riscos Psicossociais (NR-01 / COPSOQ II-Br)")
-	pdf.Ln(12)
+    pdf.SetFont("Arial", "B", 14)
+    // USAR latin1() AQUI
+    pdf.Cell(0, 10, latin1("Inventário de Riscos Psicossociais (NR-01 / COPSOQ II-Br)"))
+    pdf.Ln(12)
 
-	pdf.SetFont("Arial", "", 10)
-	pdf.Cell(0, 8, fmt.Sprintf("Funcionario: %s", nome))
-	pdf.Ln(6)
-	pdf.Cell(0, 8, fmt.Sprintf("Indice de Saude Mental Global: %d/100", data.ScoreGeral))
-	pdf.Ln(12)
+    pdf.SetFont("Arial", "", 10)
+    pdf.Cell(0, 8, latin1(fmt.Sprintf("Funcionário: %s", nome)))
+    pdf.Ln(6)
+    pdf.Cell(0, 8, latin1(fmt.Sprintf("Índice de Saúde Mental Global: %d/100", data.ScoreGeral)))
+    pdf.Ln(12)
 
-	pdf.SetFillColor(230, 230, 230)
-	pdf.SetFont("Arial", "B", 8)
-	pdf.CellFormat(55, 10, "Dimensao", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(12, 10, "P", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(12, 10, "S", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(25, 10, "Risco", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(85, 10, "Recomendacao NR-01", "1", 1, "C", true, 0, "")
+    pdf.SetFillColor(230, 230, 230)
+    pdf.SetFont("Arial", "B", 8)
+    pdf.CellFormat(55, 10, latin1("Dimensão"), "1", 0, "C", true, 0, "")
+    pdf.CellFormat(12, 10, "P", "1", 0, "C", true, 0, "")
+    pdf.CellFormat(12, 10, "S", "1", 0, "C", true, 0, "")
+    pdf.CellFormat(25, 10, "Risco", "1", 0, "C", true, 0, "")
+    pdf.CellFormat(85, 10, latin1("Recomendação NR-01"), "1", 1, "C", true, 0, "")
 
-	pdf.SetFont("Arial", "", 7)
-	for _, r := range data.MatrizPGR {
-		c, ok := cores[r.CorPGR]
-		if !ok { c = []int{255, 255, 255} }
+    pdf.SetFont("Arial", "", 7)
+    for _, r := range data.MatrizPGR {
+        c, ok := cores[r.CorPGR]
+        if !ok { c = []int{255, 255, 255} }
 
-		pdf.CellFormat(55, 10, r.Dimensao, "1", 0, "L", false, 0, "")
-		pdf.CellFormat(12, 10, fmt.Sprintf("%d", r.Probabilidade), "1", 0, "C", false, 0, "")
-		pdf.CellFormat(12, 10, fmt.Sprintf("%d", r.Severidade), "1", 0, "C", false, 0, "")
+        // USAR latin1() NOS CAMPOS DA IA
+        pdf.CellFormat(55, 10, latin1(r.Dimensao), "1", 0, "L", false, 0, "")
+        pdf.CellFormat(12, 10, fmt.Sprintf("%d", r.Probabilidade), "1", 0, "C", false, 0, "")
+        pdf.CellFormat(12, 10, fmt.Sprintf("%d", r.Severidade), "1", 0, "C", false, 0, "")
 
-		pdf.SetFillColor(c[0], c[1], c[2])
-		pdf.CellFormat(25, 10, r.NivelRisco, "1", 0, "C", true, 0, "")
+        pdf.SetFillColor(c[0], c[1], c[2])
+        pdf.CellFormat(25, 10, latin1(r.NivelRisco), "1", 0, "C", true, 0, "")
 
-		x, y := pdf.GetX(), pdf.GetY()
-		pdf.MultiCell(85, 5, r.Recomendacao, "1", "L", false)
-		pdf.SetXY(x+85, y)
-		pdf.Ln(10)
-	}
+        x, y := pdf.GetX(), pdf.GetY()
+        pdf.MultiCell(85, 5, latin1(r.Recomendacao), "1", "L", false)
+        pdf.SetXY(x+85, y)
+        pdf.Ln(10)
+    }
 
-	pdf.Ln(5)
-	pdf.SetFont("Arial", "B", 10)
-	pdf.Cell(0, 10, "Parecer Tecnico:")
-	pdf.Ln(8)
-	pdf.SetFont("Arial", "", 9)
-	pdf.MultiCell(0, 5, data.Conclusao, "", "L", false)
+    pdf.Ln(5)
+    pdf.SetFont("Arial", "B", 10)
+    pdf.Cell(0, 10, latin1("Parecer Técnico:"))
+    pdf.Ln(8)
+    pdf.SetFont("Arial", "", 9)
+    pdf.MultiCell(0, 5, latin1(data.Conclusao), "", "L", false)
 
-	return pdf.OutputFileAndClose(path)
+    return pdf.OutputFileAndClose(path)
 }
